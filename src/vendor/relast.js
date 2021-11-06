@@ -111,13 +111,12 @@ const Rapp = new Class(
                 const attrs = node.attributes;
                 for(let a of attrs)
                 {
-                    if(a.name === 'id'){
+                    if(a.name === 'id')
                         this._wrappers.ids[a.value] = node;
-                    }else if(a.name === 'state'){
-                        this.index_state(a.value.trim(), node, base_node, 'attr', token);
-                        // this._wrappers.w_states[a.value] = node;
-                        //SET STATE VALUE IN THIS NODE
-                    }
+
+                    if(a.name === 'state')
+                        this.index_state(a.value.trim(), node, base_node, 'attr', token, {attr: a.name});
+                    
                     if(this.has_events_listener(`${a.name}='${a.value}'`))
                     {
                         const event = a.name.replace('on', '');
@@ -131,10 +130,26 @@ const Rapp = new Class(
                     }
                     if(this.has_textual_state(a.value))
                         this.index_textual_states(node, base_node, 'text_attr', a.value, token, {attr: a.name});
+                    
+                    if(a.name.toLowerCase().trim() === 'if')
+                    {
+                        const cond = a.value.substr(1, a.value.length - 2).replace(/\s/g, '');
+                        const split = cond.split(':');
+                        let condition = split[0];
+                        this.index_conditional_states(node, base_node, 'if', split[0], token, {yes: split[1].trim(), no: split[2].trim()});
+                    }else if(a.name.toLowerCase().trim() === 'foreach')
+                    {
+                        const cond = a.value.substr(1, a.value.length - 2).replace(/\s/g, '');
+                        const split = cond.split(':');
+                        let condition = split[0];
+                        this.index_foreach_states(node, base_node, 'foreach', split[0], token, {iterator: split[1].trim()});
+                    }else if(a.name.toLowerCase().trim() === 'for')
+                    {
+                    }
                 }
                 for(let a of attrs)
                 {
-                    if(a.name !== 'class')
+                    if(a.name !== 'class' && a.name !== 'href')
                         node.removeAttributeNode(a);
                 }
 
@@ -154,7 +169,6 @@ const Rapp = new Class(
         },
         extract_event_listener: function(v)
         {
-            console.log(v);
             const replace = v.replace('on', '');
             const split = replace.split('=');
             if(split.length === 0) return null;
@@ -198,6 +212,28 @@ const Rapp = new Class(
                 this.index_state(state, node, base_node, type, token, addons);
             }
         },
+        index_conditional_states: function(node, base_node, type, condition, token, addons={})
+        {
+            for(let s in this._states)
+            {
+                const regexp = new RegExp(s.trim(), 'g');
+                if(condition.match(regexp) !== null)
+                {
+                    this.index_state(s.trim(), node, condition, type, token, addons);
+                }
+            }
+        },
+        index_foreach_states: function(node, base_node, type, condition, token, addons={})
+        {
+            for(let s in this._states)
+            {
+                const regexp = new RegExp(s.trim(), 'g');
+                if(condition.match(regexp) !== null)
+                {
+                    this.index_state(s.trim(), node, condition, type, token, addons);
+                }
+            }
+        },
         state: function(k, v=null)
         {
             if(v === null)
@@ -217,14 +253,41 @@ const Rapp = new Class(
                 let value = '';
                 if(data.type === 'text')
                     value = data.base_node.nodeValue;
-                else if(data.type === 'text_attr'){
+                else if(data.type === 'text_attr')
                     value = data.base_node.attributes[data.addons.attr].value;
+                else if(data.type === 'if' || data.type === 'foreach' || data.type === 'for'){
+                    data.final_node.innerHTML = '';
                 }
                 
                 for(let s of data.states)
                 {
                     if(data.type === 'text' || data.type === 'text_attr')
-                        value = value.replace(`[state:${s}]`, this._states[s] || '[no-value]');
+                        value = value.replace(`[state:${s}]`, this._states[s] !== undefined || this._states[s] !== null ? this._states[s] : '[no-value]');
+                    else if(data.type === 'attr')
+                        value = this._states[s] || '[no-value]';
+                    else if(data.type === 'if')
+                    {
+                        const regexp = new RegExp(s, 'g');
+                        value = data.base_node.replace(regexp, this._states[s]);
+                    }
+                    else if(data.type === 'foreach')
+                    {
+                        const buffer = this._states[s];
+                        if(typeof(buffer) === 'object' && Array.isArray(buffer))
+                        {
+                            for(let i of buffer)
+                            {
+                                let item = this._dom.iterator[data.addons.iterator];
+                                for(let p in i)
+                                {
+                                    if(!i.hasOwnProperty(p)) continue;
+                                    const regexp = new RegExp(`\\[${p}\\]`, 'g');
+                                    item = item.replace(regexp, i[p]);
+                                }
+                                value += item;
+                            }
+                        }
+                    }
                 }
 
                 
@@ -236,6 +299,29 @@ const Rapp = new Class(
                         data.final_node.attributes[data.addons.attr].value = value;
                     else if(data.addons.attr.toLowerCase() === 'value')
                         data.final_node.value = value;
+                }else if(data.type === 'attr')
+                    data.final_node.setAttribute(data.addons.attr, value);
+                else if(data.type === 'if')
+                {
+                    const result = eval(value) ? data.addons.yes : (data.addons.no ? data.addons.no : null);
+                    if(result)
+                    {
+                        const doms = this.print(this._dom[result]);
+                        for(let c of doms.visual.childNodes)
+                            data.final_node.appendChild(c);
+                    }
+                }else if(data.type === 'foreach')
+                {
+                    const doms = this.print(value);
+                    console.log(doms.visual);
+                    const buffer = [];
+                    for(let i = 0; i < doms.visual.childNodes.length; i++)
+                    {
+                        const item = doms.visual.childNodes[i];
+                        buffer.push(item);
+                    }
+                    for(let c of buffer)
+                        data.final_node.appendChild(c);
                 }
             }
         },
